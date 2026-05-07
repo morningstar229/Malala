@@ -49,6 +49,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QProgressBar,
     QScrollArea,
     QSpinBox,
@@ -297,11 +298,15 @@ class MainWindow(QMainWindow):
         form.addWidget(self.btn_blender)
 
         hint = QLabel(
-            "Ctrl+G — генерация · Ctrl+S — PNG · кнопка выше или Файл — OBJ для Blender\n"
-            "Параметры и размер окна сохраняются автоматически."
+            "<div style=\"line-height:1.35;\">"
+            "<b>Ctrl+G</b> — сгенерировать · <b>Ctrl+S</b> — PNG.<br>"
+            "OBJ для Blender — кнопка выше или меню Файл."
+            "</div>"
         )
         hint.setWordWrap(True)
+        hint.setScaledContents(False)
         hint.setStyleSheet("color: palette(mid); font-size: 11px;")
+        hint.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         form.addWidget(hint)
 
         gen_wrap = QWidget()

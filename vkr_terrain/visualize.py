@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import textwrap
 
 import numpy as np
 
@@ -188,26 +189,43 @@ def render_generation_board_on_figure(
     zmax = earth.shape[0]
     ax6 = fig.add_subplot(2, 3, 6)
     ax6.axis("off")
+    stats_raw = (
+        "Статистика генерации\n"
+        f"Суша: {n_land} кл. · Море: {n_sea}\n"
+        f"Макс. высота: {int(stages.heights.max())} вокс.\n"
+        f"Объём Z×Y×X: {zmax}×{earth.shape[1]}×{earth.shape[2]}\n"
+        f"Вокс. земля: {vol_earth} · вода: {vol_water}\n\n"
+        "Экспорт OBJ: суходильный mesh и вода собраны в одну сцену; "
+        "низ острова после якорей совпадает с горизонтом моря "
+        "(см. README).\n"
+        "2D: суше/море только по маске сетки.\nРельеф: tapered_height."
+    )
+    stat_lines = []
+    for ln in stats_raw.split("\n"):
+        if not ln:
+            stat_lines.append("")
+            continue
+        stat_lines.extend(
+            textwrap.wrap(
+                ln,
+                width=28,
+                break_long_words=True,
+                break_on_hyphens=False,
+            )
+        )
     ax6.text(
         0.02,
-        0.95,
-        "Статистика генерации\n"
-        f"Клеток суши: {n_land}\n"
-        f"Клеток моря: {n_sea}\n"
-        f"Макс. высота: {int(stages.heights.max())} (вокселей)\n"
-        f"Размер объёма Z×Y×X: {zmax}×{earth.shape[1]}×{earth.shape[2]}\n"
-        f"Вокселей земли: {vol_earth}\n"
-        f"Вокселей воды: {vol_water}\n"
-        "\nЭкспорт OBJ: низ меша совмещён с горизонтом воды (доп. якорь под прореживание сетки); вода чуть ниже z=0.\n"
-        "2D hillshade и этапы — маска суше/море по сетке (без затопления внутренних низин по высоте).\n"
-        "Режим рельефа: tapered_height.",
-        fontsize=9,
+        0.96,
+        "\n".join(stat_lines),
+        fontsize=8,
         verticalalignment="top",
+        horizontalalignment="left",
+        clip_on=False,
         fontfamily="sans-serif",
         transform=ax6.transAxes,
     )
 
-    fig.subplots_adjust(top=0.9, hspace=0.42, wspace=0.32)
+    fig.subplots_adjust(top=0.88, bottom=0.07, left=0.035, right=0.984, hspace=0.45, wspace=0.30)
 
 
 def save_generation_board(
