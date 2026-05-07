@@ -1,0 +1,5 @@
+numpy>=1.24
+matplotlib>=3.8
+scipy>=1.10
+PySide6>=6.5
+# Опционально: pygame (лаборатория CA), на Python 3.13+ могут не быть колёс — 3.11–3.12 или pygame-ce.
