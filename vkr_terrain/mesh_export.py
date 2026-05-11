@@ -102,51 +102,14 @@ def scale_relief_to_map_extent(
     return Z * (target_peak / zmx)
 
 
-def _vertices_in_full_land_quads(land_mask: np.ndarray) -> np.ndarray:
-    """Угол (i,j) участвует в mesh, если он — вершина хотя бы одной ячейки 2×2 из суши."""
-    lm = land_mask.astype(bool)
-    rows, cols = lm.shape
-    used = np.zeros_like(lm, dtype=bool)
-    if rows < 2 or cols < 2:
-        return used
-    cell_ok = lm[:-1, :-1] & lm[:-1, 1:] & lm[1:, :-1] & lm[1:, 1:]
-    used[:-1, :-1] |= cell_ok
-    used[:-1, 1:] |= cell_ok
-    used[1:, :-1] |= cell_ok
-    used[1:, 1:] |= cell_ok
-    return used
-
-
-def _mesh_sea_level_floor(Z: np.ndarray, land_mask: np.ndarray) -> float:
+def triangulated_mesh_vertex_minimum(z: np.ndarray, land_mask: np.ndarray) -> float | None:
     """
-    Уровень «дна» видимого меша (не вся матрица суше): только вершины полных квадов.
-    Иначе низ берега часто маской попадает в клетки без 4/4 углов суши — по ним брали min,
-    делали большой сдвиг, а реально отрисовывались только более высокие внутренние вершины.
+    Минимум Z по всем вершинам, которые реально входят в треугольники суши
+    (ячейка 2×2 полностью в маске суши — как в OBJ / plot_surface).
     """
     lm = land_mask.astype(bool)
-    z = np.asarray(Z, dtype=np.float64)
-    used = _vertices_in_full_land_quads(lm)
-    if np.any(used):
-        return float(np.min(z[used]))
-    if np.any(lm):
-        return float(np.min(z[lm]))
-    return 0.0
-
-
-def snap_land_z_to_triangulated_mesh_floor(Z: np.ndarray, land_mask: np.ndarray) -> np.ndarray:
-    """
-    Сдвигает рельеф на **этой же** сетке, чтобы минимальная высота по углам **реально
-    выпускаемых** суходильных четырёхугольников (полные квады 2×2) была 0.
-
-    ``anchor_sea_level`` задаёт общий порог по решётке ``Z[::step]`` на полном массиве; после выборки
-    ``[::step]`` нижний угол живого mesh может всё же оказаться заметно выше 0, а ``water_surface``
-    остаётся у −eps — отсюда «остров в воздухе» в Blender относительно воды.
-
-    Если полных суходильных ячеек нет, массив не меняют.
-    """
-    lm = land_mask.astype(bool)
-    z = np.asarray(Z, dtype=np.float64).copy()
-    rows, cols = z.shape
+    a = np.asarray(z, dtype=np.float64)
+    rows, cols = a.shape
     vmin = np.inf
     for i in range(rows - 1):
         for j in range(cols - 1):
@@ -154,14 +117,63 @@ def snap_land_z_to_triangulated_mesh_floor(Z: np.ndarray, land_mask: np.ndarray)
                 continue
             vmin = min(
                 vmin,
-                float(z[i, j]),
-                float(z[i, j + 1]),
-                float(z[i + 1, j + 1]),
-                float(z[i + 1, j]),
+                float(a[i, j]),
+                float(a[i, j + 1]),
+                float(a[i + 1, j + 1]),
+                float(a[i + 1, j]),
             )
-    if not np.isfinite(vmin):
-        return z
-    return np.where(lm, np.maximum(z - vmin, 0.0), 0.0)
+    if np.isfinite(vmin):
+        return float(vmin)
+    if np.any(lm):
+        return float(np.min(a[lm]))
+    return None
+
+
+def vertical_datum_for_export_mesh(
+    z_full: np.ndarray,
+    land_mask_full: np.ndarray,
+    surface_downsample: int,
+) -> float:
+    """
+    Один скаляр «уровень опоры»: минимум по вершинам tri-сетки на **той же** прореженной решётке,
+    что OBJ и 3D (шаг surface_downsample). Его вычитаем из полного поля высот — и суша, и визуал
+    в одной системе координат с горизонтом моря.
+    """
+    step = max(1, int(surface_downsample))
+    zc = z_full[::step, ::step]
+    lmc = land_mask_full[::step, ::step].astype(bool)
+    vm = triangulated_mesh_vertex_minimum(zc, lmc)
+    return 0.0 if vm is None else vm
+
+
+def apply_vertical_datum(z: np.ndarray, land_mask: np.ndarray, datum: float) -> np.ndarray:
+    """z' = max(z - datum, 0) на суше, 0 на море — «дно» видимого рельефа у нуля."""
+    lm = land_mask.astype(bool)
+    return np.where(lm, np.maximum(np.asarray(z, dtype=np.float64) - float(datum), 0.0), 0.0)
+
+
+def sea_plane_z_for_datum_relief(z_adj: np.ndarray, land_mask: np.ndarray, *, scale_xy: float) -> float:
+    """
+    Горизонт моря: чуть ниже минимума вершин tri-меша после сдвига (ожидается ~0).
+    Связь суша–вода не разрывается произвольным −0.002·z_peak.
+    """
+    lm = land_mask.astype(bool)
+    m = triangulated_mesh_vertex_minimum(z_adj, lm)
+    if m is None:
+        return -1e-6
+    peak = float(np.max(z_adj[lm])) if np.any(lm) else 1.0
+    span = max(peak - m, peak, 1e-12)
+    xy = float(max(scale_xy, 1e-12))
+    eps = max(1e-7 * span, 5e-8 * peak, xy * 1e-7, 1e-12)
+    return float(m) - eps
+
+
+def snap_land_z_to_triangulated_mesh_floor(Z: np.ndarray, land_mask: np.ndarray) -> np.ndarray:
+    """Идемпотентно: датум по минимуму tri-меша на этой же сетке (см. triangulated_mesh_vertex_minimum)."""
+    v = triangulated_mesh_vertex_minimum(Z, land_mask)
+    if v is None:
+        return np.asarray(Z, dtype=np.float64).copy()
+    return apply_vertical_datum(Z, land_mask, v)
 
 
 def anchor_sea_level(
@@ -171,16 +183,15 @@ def anchor_sea_level(
     surface_downsample: int = 1,
 ) -> np.ndarray:
     """
-    Уровень моря у z≈0. Сдвиг считается по той же сетке, что и 3D/OBJ после surface_downsample,
-    и только по вершинам триангуляции — как в экспорте.
+    Вертикальный датум: один скаляр по tri-сетке экспорта (шаг surface_downsample),
+    вычитается со всей полной решётки — предпросмотр и OBJ в одной системе с горизонтом моря.
     """
     lm = land_mask.astype(bool)
     z = np.asarray(Z, dtype=np.float64)
     if not np.any(lm):
         return z.copy()
-    step = max(1, int(surface_downsample))
-    z_floor = _mesh_sea_level_floor(z[::step, ::step], lm[::step, ::step])
-    return np.where(lm, np.maximum(z - z_floor, 0.0), 0.0)
+    d = vertical_datum_for_export_mesh(z, lm, surface_downsample)
+    return apply_vertical_datum(z, lm, d)
 
 
 def _water_plane_z_for_mesh_land(
@@ -189,15 +200,8 @@ def _water_plane_z_for_mesh_land(
     *,
     scale_xy: float,
 ) -> float:
-    """
-    Горизонт воды в тех же координатах, что и суша после ``anchor_sea_level``:
-    «море» на условном z≈0, чуть ниже нуля против z-fighting.
-    Высота по маске не подрезается под «макс. берег» — это ломало соответствие предпросмотру (осям Z от 0).
-    """
-    lm = land_mask.astype(bool)
-    z_peak = float(np.nanmax(zf[lm])) if lm.any() else 1.0
-    xy = float(max(scale_xy, 1e-9))
-    return -float(max(z_peak * 0.002, xy * 0.003, 1e-9))
+    """Горизонт воды чуть ниже минимума вершин tri-меша (после датума ≈ 0)."""
+    return sea_plane_z_for_datum_relief(zf, land_mask, scale_xy=scale_xy)
 
 
 def _vertex_normals_from_height(Z: np.ndarray, scale_xy: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -213,6 +217,93 @@ def _vertex_normals_from_height(Z: np.ndarray, scale_xy: float) -> tuple[np.ndar
     ln = np.sqrt(nx * nx + ny * ny + nz * nz)
     ln = np.maximum(ln, 1e-12)
     return nx / ln, ny / ln, nz / ln
+
+
+def _is_full_land_quad(lm: np.ndarray, i: int, j: int) -> bool:
+    """Ячейка сетки (i..i+1, j..j+1) целиком суша — под неё строится верх меша."""
+    return bool(lm[i, j] and lm[i, j + 1] and lm[i + 1, j + 1] and lm[i + 1, j])
+
+
+def build_land_prism_extension_lines(
+    zf: np.ndarray,
+    lm: np.ndarray,
+    scale_xy: float,
+    zw: float,
+    rows: int,
+    cols: int,
+    vid: callable,
+) -> tuple[list[str], list[str], int]:
+    """
+    Нижняя крышка на уровне воды + боковые стенки по контуру суходильных 2×2-квадов
+    (без дублирования общих стен между двумя суходильными ячейками). Вершины «дна» новые,
+    индексы начинаются с rows*cols + 1.
+
+    Возвращает (строки v, строки f без vn, число новых вершин).
+    """
+    sx = float(scale_xy)
+    corner_used = np.zeros((rows, cols), dtype=bool)
+    for i in range(rows - 1):
+        for j in range(cols - 1):
+            if not _is_full_land_quad(lm, i, j):
+                continue
+            corner_used[i : i + 2, j : j + 2] = True
+
+    v_lines: list[str] = []
+    bot_id = np.zeros((rows, cols), dtype=np.int32)
+    next_id = rows * cols + 1
+    for i in range(rows):
+        for j in range(cols):
+            if not corner_used[i, j]:
+                continue
+            bot_id[i, j] = next_id
+            next_id += 1
+            v_lines.append(f"v {j * sx:.6f} {i * sx:.6f} {float(zw):.6f}")
+
+    n_fill = next_id - (rows * cols + 1)
+    if n_fill <= 0:
+        return [], [], 0
+
+    f_lines: list[str] = [
+        "# Нижняя грань и стенки до уровня воды (объём суши; верх — исходные v выше).",
+        "o terrain_solid",
+        "usemtl Land",
+    ]
+
+    for i in range(rows - 1):
+        for j in range(cols - 1):
+            if not _is_full_land_quad(lm, i, j):
+                continue
+            a, b, c, d = int(bot_id[i, j]), int(bot_id[i, j + 1]), int(bot_id[i + 1, j + 1]), int(bot_id[i + 1, j])
+            # Низ (вид снизу, нормаль −Z): TL→BL→BR, TL→BR→TR.
+            f_lines.append(f"f {a} {d} {c}")
+            f_lines.append(f"f {a} {c} {b}")
+
+    for i in range(rows - 1):
+        for j in range(cols - 1):
+            if not _is_full_land_quad(lm, i, j):
+                continue
+            # Север (меньше i): грань наружу −Y в индексах строк… смотрим с +Y наружу.
+            if i == 0 or not _is_full_land_quad(lm, i - 1, j):
+                t1, t2, b1, b2 = vid(i, j), vid(i, j + 1), int(bot_id[i, j]), int(bot_id[i, j + 1])
+                f_lines.append(f"f {t1} {t2} {b2}")
+                f_lines.append(f"f {t1} {b2} {b1}")
+            if i + 1 > rows - 2 or not _is_full_land_quad(lm, i + 1, j):
+                t1, t2 = vid(i + 1, j + 1), vid(i + 1, j)
+                b1, b2 = int(bot_id[i + 1, j + 1]), int(bot_id[i + 1, j])
+                f_lines.append(f"f {t1} {t2} {b2}")
+                f_lines.append(f"f {t1} {b2} {b1}")
+            if j == 0 or not _is_full_land_quad(lm, i, j - 1):
+                t1, t2 = vid(i + 1, j), vid(i, j)
+                b1, b2 = int(bot_id[i + 1, j]), int(bot_id[i, j])
+                f_lines.append(f"f {t1} {t2} {b2}")
+                f_lines.append(f"f {t1} {b2} {b1}")
+            if j + 1 > cols - 2 or not _is_full_land_quad(lm, i, j + 1):
+                t1, t2 = vid(i, j + 1), vid(i + 1, j + 1)
+                b1, b2 = int(bot_id[i, j + 1]), int(bot_id[i + 1, j + 1])
+                f_lines.append(f"f {t1} {t2} {b2}")
+                f_lines.append(f"f {t1} {b2} {b1}")
+
+    return v_lines, f_lines, n_fill
 
 
 def _write_mtl(mtl_path: str) -> None:
@@ -272,8 +363,8 @@ def export_heightmap_obj(
     )
     sx = scale_xy * step
     Z = scale_relief_to_map_extent(Z, lm, scale_xy=sx, relief_fraction=relief_fraction)
+    # Датум по tri-мешу на этой же (уже прореженной) сетке — один шаг, без двойного сдвига.
     Z = anchor_sea_level(Z, lm, surface_downsample=1)
-    Z = snap_land_z_to_triangulated_mesh_floor(Z, lm)
     nx, ny, nz = _vertex_normals_from_height(Z, sx)
 
     base = Path(path)
@@ -296,13 +387,23 @@ def export_heightmap_obj(
             z = float(Z[i, j])
             lines.append(f"v {j * sx:.6f} {i * sx:.6f} {z:.6f}")
 
+    xm = (cols - 1) * sx
+    ym = (rows - 1) * sx
+    margin = sx * 2.5
+    x0, x1 = -margin, xm + margin
+    y0, y1 = -margin, ym + margin
+    zw = _water_plane_z_for_mesh_land(Z, lm, scale_xy=sx)
+
+    fill_v, fill_f, n_fill_verts = build_land_prism_extension_lines(Z, lm, sx, zw, rows, cols, vid)
+    lines.extend(fill_v)
+
     for i in range(rows):
         for j in range(cols):
             lines.append(f"vn {nx[i,j]:.6f} {ny[i,j]:.6f} {nz[i,j]:.6f}")
 
     # Треугольники суши строим только для ПОЛНОЙ сухой ячейки (все 4 угла суша).
     # Это максимально близко к plot_surface в UI (где ячейки с NaN на углах не рисуются).
-    tris: list[tuple[str, int, int, int]] = []
+    lines.append("usemtl Land")
     for i in range(rows - 1):
         for j in range(cols - 1):
             a = vid(i, j)
@@ -315,25 +416,14 @@ def export_heightmap_obj(
             )
             if not full_land_cell:
                 continue
-            tris.append(("Land", a, b, c))
-            tris.append(("Land", a, c, d))
+            lines.append(f"f {a}//{a} {b}//{b} {c}//{c}")
+            lines.append(f"f {a}//{a} {c}//{c} {d}//{d}")
 
-    cur_mtl = ""
-    for tag, v1, v2, v3 in tris:
-        if tag != cur_mtl:
-            lines.append(f"usemtl {tag}")
-            cur_mtl = tag
-        lines.append(f"f {v1}//{v1} {v2}//{v2} {v3}//{v3}")
+    lines.extend(fill_f)
 
-    # Цельная вода: чуть ниже z=0, чтобы не мерцало с берегом; запас по краям карты.
     n_terrain_verts = rows * cols
     n_terrain_vn = rows * cols
-    xm = (cols - 1) * sx
-    ym = (rows - 1) * sx
-    margin = sx * 2.5
-    x0, x1 = -margin, xm + margin
-    y0, y1 = -margin, ym + margin
-    zw = _water_plane_z_for_mesh_land(Z, lm, scale_xy=sx)
+    w_base = n_terrain_verts + n_fill_verts
 
     lines.append("o water_surface")
     lines.append("usemtl Sea")
@@ -343,10 +433,10 @@ def export_heightmap_obj(
     lines.append(f"v {x0:.6f} {y1:.6f} {zw:.6f}")
     wn_idx = n_terrain_vn + 1
     lines.append("vn 0.0 0.0 1.0")
-    w0 = n_terrain_verts + 1
-    w1 = n_terrain_verts + 2
-    w2 = n_terrain_verts + 3
-    w3 = n_terrain_verts + 4
+    w0 = w_base + 1
+    w1 = w_base + 2
+    w2 = w_base + 3
+    w3 = w_base + 4
     lines.append(f"f {w0}//{wn_idx} {w1}//{wn_idx} {w2}//{wn_idx}")
     lines.append(f"f {w0}//{wn_idx} {w2}//{wn_idx} {w3}//{wn_idx}")
 
@@ -369,6 +459,7 @@ def export_prepared_surface_obj(
     rows, cols = Z.shape
     lm = land_mask.astype(bool)
     zf = np.where(lm, np.nan_to_num(Z.astype(float), nan=0.0), 0.0)
+    # На сетке экспорта — тот же датум, что в anchor (tri-минимум по полным квадам).
     zf = snap_land_z_to_triangulated_mesh_floor(zf, lm)
     nx, ny, nz = _vertex_normals_from_height(zf, scale_xy)
 
@@ -389,6 +480,19 @@ def export_prepared_surface_obj(
     for i in range(rows):
         for j in range(cols):
             lines.append(f"v {j * scale_xy:.6f} {i * scale_xy:.6f} {float(zf[i, j]):.6f}")
+
+    xm = (cols - 1) * scale_xy
+    ym = (rows - 1) * scale_xy
+    margin = scale_xy * 2.5
+    x0, x1 = -margin, xm + margin
+    y0, y1 = -margin, ym + margin
+    zw = _water_plane_z_for_mesh_land(zf, lm, scale_xy=scale_xy)
+
+    fill_v, fill_f, n_fill_verts = build_land_prism_extension_lines(
+        zf, lm, scale_xy, zw, rows, cols, vid
+    )
+    lines.extend(fill_v)
+
     for i in range(rows):
         for j in range(cols):
             lines.append(f"vn {nx[i,j]:.6f} {ny[i,j]:.6f} {nz[i,j]:.6f}")
@@ -405,15 +509,11 @@ def export_prepared_surface_obj(
             lines.append(f"f {a}//{a} {b}//{b} {c}//{c}")
             lines.append(f"f {a}//{a} {c}//{c} {d}//{d}")
 
-    # Единая водная плоскость (как в основном экспорте)
+    lines.extend(fill_f)
+
     n_terrain_verts = rows * cols
     n_terrain_vn = rows * cols
-    xm = (cols - 1) * scale_xy
-    ym = (rows - 1) * scale_xy
-    margin = scale_xy * 2.5
-    x0, x1 = -margin, xm + margin
-    y0, y1 = -margin, ym + margin
-    zw = _water_plane_z_for_mesh_land(zf, lm, scale_xy=scale_xy)
+    w_base = n_terrain_verts + n_fill_verts
 
     lines.append("o water_surface")
     lines.append("usemtl Sea")
@@ -423,10 +523,10 @@ def export_prepared_surface_obj(
     lines.append(f"v {x0:.6f} {y1:.6f} {zw:.6f}")
     wn_idx = n_terrain_vn + 1
     lines.append("vn 0.0 0.0 1.0")
-    w0 = n_terrain_verts + 1
-    w1 = n_terrain_verts + 2
-    w2 = n_terrain_verts + 3
-    w3 = n_terrain_verts + 4
+    w0 = w_base + 1
+    w1 = w_base + 2
+    w2 = w_base + 3
+    w3 = w_base + 4
     lines.append(f"f {w0}//{wn_idx} {w1}//{wn_idx} {w2}//{wn_idx}")
     lines.append(f"f {w0}//{wn_idx} {w2}//{wn_idx} {w3}//{wn_idx}")
 

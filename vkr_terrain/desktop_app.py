@@ -70,7 +70,6 @@ from .mesh_export import (
     anchor_sea_level,
     build_smooth_height_surface,
     scale_relief_to_map_extent,
-    snap_land_z_to_triangulated_mesh_floor,
 )
 from .params import GenerationParams
 from .terrain_3d import run_pipeline_from_params
@@ -731,9 +730,7 @@ class MainWindow(QMainWindow):
         step = max(1, int(params.surface_downsample))
         z_smooth = anchor_sea_level(z_smooth, stages.land_mask, surface_downsample=step)
         lmds = stages.land_mask[::step, ::step].astype(bool)
-        z_coarse = np.where(lmds, z_smooth[::step, ::step].astype(np.float64), 0.0)
-        z_coarse = snap_land_z_to_triangulated_mesh_floor(z_coarse, lmds)
-        self._ui_surface_Z = np.where(lmds, z_coarse, np.nan)
+        self._ui_surface_Z = np.where(lmds, z_smooth[::step, ::step].astype(np.float64), np.nan)
         self._ui_surface_mask = lmds
         self._ui_surface_scale_xy = float(step)
         self.canvas.draw()

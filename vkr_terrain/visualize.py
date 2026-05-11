@@ -12,7 +12,6 @@ from .mesh_export import (
     anchor_sea_level,
     build_smooth_height_surface,
     scale_relief_to_map_extent,
-    snap_land_z_to_triangulated_mesh_floor,
 )
 
 try:
@@ -141,9 +140,7 @@ def render_generation_board_on_figure(
     fig.colorbar(im, ax=ax3, fraction=0.046, pad=0.04)
 
     lmds = stages.land_mask[::step, ::step].astype(bool)
-    z_coarse = np.where(lmds, z_smooth[::step, ::step].astype(np.float64), 0.0)
-    z_coarse = snap_land_z_to_triangulated_mesh_floor(z_coarse, lmds)
-    h_ds = np.where(lmds, z_coarse, np.nan)
+    h_ds = np.where(lmds, z_smooth[::step, ::step].astype(np.float64), np.nan)
     ys = np.arange(h_ds.shape[0])
     xs = np.arange(h_ds.shape[1])
     X, Y = np.meshgrid(xs, ys)
@@ -195,9 +192,8 @@ def render_generation_board_on_figure(
         f"Макс. высота: {int(stages.heights.max())} вокс.\n"
         f"Объём Z×Y×X: {zmax}×{earth.shape[1]}×{earth.shape[2]}\n"
         f"Вокс. земля: {vol_earth} · вода: {vol_water}\n\n"
-        "Экспорт OBJ: суходильный mesh и вода собраны в одну сцену; "
-        "низ острова после якорей совпадает с горизонтом моря "
-        "(см. README).\n"
+        "Экспорт OBJ: один датум по tri-сетке; море чуть ниже мин. вершин суши "
+        "(README).\n"
         "2D: суше/море только по маске сетки.\nРельеф: tapered_height."
     )
     stat_lines = []
