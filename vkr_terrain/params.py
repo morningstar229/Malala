@@ -21,7 +21,7 @@ class GenerationParams:
     height_layer_iterations: int = S.HEIGHT_LAYER_ITERATIONS
     layer_noise_probability: float = S.LAYER_NOISE_PROBABILITY
     sea_water_depth: int = S.SEA_WATER_DEPTH
-    # Оставлена только модель tapered_height (убывающая высота + CA по слоям)
+    # tapered_height — CA по горизонтальным срезам объёма; column_layers — сумма CA-слоёв по столбикам суши
     height_model: str = S.DEFAULT_HEIGHT_MODEL
     # только визуализация
     voxel_max_axis: int = S.VOXEL_VIEW_MAX_AXIS
@@ -39,10 +39,13 @@ class GenerationParams:
         self.sea_water_depth = max(0, min(64, int(self.sea_water_depth)))
         self.voxel_max_axis = max(12, min(128, int(self.voxel_max_axis)))
         self.surface_downsample = max(1, min(16, int(self.surface_downsample)))
-        hm = str(self.height_model).lower().strip()
-        if hm == "habr_article":
-            hm = "tapered_height"
-        self.height_model = "tapered_height"
+        hm = str(self.height_model).lower().strip().replace("-", "_")
+        if hm in ("habr_article", "habr", "layered_ca", "layer_sum", "columns"):
+            hm = S.HEIGHT_MODEL_COLUMN_LAYERS
+        allowed = (S.DEFAULT_HEIGHT_MODEL, S.HEIGHT_MODEL_COLUMN_LAYERS)
+        if hm not in allowed:
+            hm = S.DEFAULT_HEIGHT_MODEL
+        self.height_model = hm
 
     def to_dict(self) -> dict[str, object]:
         return {f.name: getattr(self, f.name) for f in fields(self)}
@@ -57,8 +60,6 @@ class GenerationParams:
                 kw[f.name] = d[f.name]
             else:
                 kw[f.name] = getattr(defaults, f.name)
-        if kw.get("height_model") == "habr_article":
-            kw["height_model"] = "tapered_height"
         if kw.get("seed") is not None:
             kw["seed"] = int(kw["seed"])  # type: ignore[arg-type]
         p = cls(**kw)  # type: ignore[arg-type]

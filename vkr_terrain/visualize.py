@@ -92,6 +92,7 @@ def render_generation_board_on_figure(
     voxel_max_axis: int = 48,
     surface_downsample: int = 2,
     suptitle: str | None = None,
+    height_model: str = "tapered_height",
 ) -> None:
     """
     Рисует полную доску на существующей Figure (для GUI и экспорта).
@@ -194,7 +195,7 @@ def render_generation_board_on_figure(
         f"Вокс. земля: {vol_earth} · вода: {vol_water}\n\n"
         "Экспорт OBJ: один датум по tri-сетке; море чуть ниже мин. вершин суши "
         "(README).\n"
-        "2D: суше/море только по маске сетки.\nРельеф: tapered_height."
+        f"2D: суше/море только по маске сетки.\nРельеф: {height_model}."
     )
     stat_lines = []
     for ln in stats_raw.split("\n"):

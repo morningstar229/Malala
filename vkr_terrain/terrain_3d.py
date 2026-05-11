@@ -14,6 +14,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from . import day_and_night as dn
+from . import settings as S
 from .params import GenerationParams
 from .settings import (
     COASTLINE_ITERATIONS,
@@ -164,6 +165,19 @@ def run_pipeline(
 
 def run_pipeline_from_params(p: GenerationParams) -> GenerationStages:
     p.clamp()
+    if p.height_model == S.HEIGHT_MODEL_COLUMN_LAYERS:
+        return run_pipeline(
+            p.rows,
+            p.cols,
+            p.seed,
+            p.toroidal,
+            p_land=p.p_land,
+            coastline_iterations=p.coastline_iterations,
+            max_height_layers=p.max_height_layers,
+            height_layer_iterations=p.height_layer_iterations,
+            layer_noise_probability=p.layer_noise_probability,
+            sea_water_depth=p.sea_water_depth,
+        )
     from .tapered_height_pipeline import run_tapered_height_stages
 
     rng = np.random.default_rng(p.seed)

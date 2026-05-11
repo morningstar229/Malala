@@ -17,8 +17,9 @@ HEIGHT_LAYER_ITERATIONS = 5
 # Шум по слоям (tapered_height)
 LAYER_NOISE_PROBABILITY = 0.40
 
-# Модель рельефа (единственная в приложении)
+# Модель рельефа по умолчанию: 3D CA по срезам (tapered_height) или слои по столбикам (column_layers)
 DEFAULT_HEIGHT_MODEL = "tapered_height"
+HEIGHT_MODEL_COLUMN_LAYERS = "column_layers"
 
 # Окно Pygame
 CELL_SIZE = 4

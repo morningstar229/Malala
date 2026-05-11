@@ -307,6 +307,7 @@ class TerrainGeneratorApp:
                     self._last_stages,
                     voxel_max_axis=p.voxel_max_axis,
                     surface_downsample=p.surface_downsample,
+                    height_model=p.height_model,
                 )
                 self.canvas.draw_idle()
                 self.status.config(text="Готово. Можно сохранить PNG.")

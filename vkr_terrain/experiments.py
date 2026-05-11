@@ -212,7 +212,7 @@ def run_lab4_3d_relief_sweep(rows: int = 96, cols: int = 96) -> list[dict[str, o
     out = _research_dir()
     table: list[dict[str, object]] = []
     seeds = [0, 1]
-    models = ["tapered_height"]
+    models = ["tapered_height", "column_layers"]
     layers = [20, 28, 36]
     h_iters = [2, 4, 6]
     for model in models:

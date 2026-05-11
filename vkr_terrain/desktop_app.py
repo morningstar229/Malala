@@ -206,8 +206,8 @@ class MainWindow(QMainWindow):
         self.cb_torus.setChecked(p.toroidal)
 
         self.combo_model = QComboBox()
-        self.combo_model.addItem("Убывающая высота + CA по слоям (tapered_height)", "tapered_height")
-        self.combo_model.setEnabled(False)
+        self.combo_model.addItem("3D CA по срезам (tapered_height)", "tapered_height")
+        self.combo_model.addItem("Сумма CA-слоёв по столбикам (column_layers)", "column_layers")
         idx = self.combo_model.findData(p.height_model)
         self.combo_model.setCurrentIndex(idx if idx >= 0 else 0)
 
@@ -456,7 +456,7 @@ class MainWindow(QMainWindow):
         help_text.setPlainText(
             "НАЗНАЧЕНИЕ\n"
             "Генерация процедурного ландшафта: случайное заполнение сушей/морем → автомат береговой линии "
-            "(правило Day & Night) → трёхмерный рельеф (режим tapered_height). Предпросмотр всех шагов слева, "
+            "(правило Day & Night) → рельеф (tapered_height или column_layers). Предпросмотр всех шагов слева, "
             "итоговая картинка справа. Экспорт в Blender сохраняет ту же численную поверхность после сглаживания, "
             "плюс плоский объект воды.\n\n"
             "ЗАПУСК\n"
@@ -613,6 +613,9 @@ class MainWindow(QMainWindow):
                 seed = int(seed_s)
             except ValueError as e:
                 raise ValueError("Сид: целое число или пусто (случайный).") from e
+        hm = self.combo_model.currentData()
+        if hm is None:
+            hm = "tapered_height"
         return GenerationParams(
             rows=self.sp_rows.value(),
             cols=self.sp_cols.value(),
@@ -626,7 +629,7 @@ class MainWindow(QMainWindow):
             sea_water_depth=self.sp_sea.value(),
             voxel_max_axis=self.sp_vox.value(),
             surface_downsample=self.sp_ds.value(),
-            height_model="tapered_height",
+            height_model=str(hm),
         )
 
     def _candidate_dict_to_params_dict(self, c: dict[str, object]) -> dict[str, object]:
@@ -721,6 +724,7 @@ class MainWindow(QMainWindow):
             stages,
             voxel_max_axis=params.voxel_max_axis,
             surface_downsample=params.surface_downsample,
+            height_model=params.height_model,
         )
         # 1-в-1 поверхность для экспорта: та же сетка и те же значения, что и в UI plot_surface.
         z_smooth = build_smooth_height_surface(stages.heights, stages.land_mask)
@@ -916,9 +920,6 @@ class MainWindow(QMainWindow):
         ]
         if not l4_pool:
             l4_pool = lab4
-        tapered_only = [r for r in l4_pool if str(r.get("height_model", "")) == "tapered_height"]
-        if tapered_only:
-            l4_pool = tapered_only
         l4_sorted = sorted(
             l4_pool,
             key=lambda r: (
@@ -1240,7 +1241,7 @@ class MainWindow(QMainWindow):
             self,
             "О программе",
             f"<b>{APP_TITLE}</b><br>Версия {APP_VERSION}<br><br>"
-            "Процедурная генерация: шум → берег (Day & Night) → рельеф (tapered_height). "
+            "Процедурная генерация: шум → берег (Day & Night) → рельеф (tapered_height или column_layers). "
             "Предпросмотр этапов, экспорт OBJ+MTL в Blender.<br><br>"
             "Пошаговая установка и сдача описаны в файле <b>README.md</b> в каталоге проекта.<br><br>"
             "Учебный проект (ВКР).",

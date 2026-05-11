@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections import deque
 from pathlib import Path
 
 import numpy as np
@@ -24,6 +25,58 @@ def _np_gaussian_filter2d(a: np.ndarray, sigma: float) -> np.ndarray:
     return np.apply_along_axis(lambda col: np.convolve(col, g, mode="same"), 0, tmp)
 
 
+def _land_distance_inland_from_shore(land_mask: np.ndarray) -> np.ndarray:
+    """
+    BFS только по суше: 0 на клетках у моря (4-соседство с морем), дальше — шаги вглубь материка.
+    Для участков без границы с морем (все суша) — +inf.
+    """
+    lm = land_mask.astype(bool)
+    rows, cols = lm.shape
+    INF = 1e18
+    dist = np.full((rows, cols), INF, dtype=np.float64)
+    q: deque[tuple[int, int]] = deque()
+    for i in range(rows):
+        for j in range(cols):
+            if not lm[i, j]:
+                continue
+            for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                ni, nj = i + di, j + dj
+                if 0 <= ni < rows and 0 <= nj < cols and not lm[ni, nj]:
+                    dist[i, j] = 0.0
+                    q.append((i, j))
+                    break
+    while q:
+        i, j = q.popleft()
+        d0 = dist[i, j]
+        for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            ni, nj = i + di, j + dj
+            if ni < 0 or ni >= rows or nj < 0 or nj >= cols:
+                continue
+            if not lm[ni, nj]:
+                continue
+            nd = d0 + 1.0
+            if nd < dist[ni, nj]:
+                dist[ni, nj] = nd
+                q.append((ni, nj))
+    return dist
+
+
+def _coastal_height_taper(z: np.ndarray, land_mask: np.ndarray, width_cells: int) -> np.ndarray:
+    """
+    Смягчает обрыв суша/вода: у берега слегка прижимает Z (после Гаусса), к центру — полная высота.
+    Без этого край tri-меша «висит» стенкой над горизонтом моря.
+    """
+    if width_cells <= 0 or not np.any(land_mask):
+        return z
+    lm = land_mask.astype(bool)
+    d = _land_distance_inland_from_shore(lm)
+    t = np.clip((d - 0.5) / float(max(width_cells, 1)), 0.0, 1.0)
+    smooth = t * t * (3.0 - 2.0 * t)
+    factor = 0.18 + 0.82 * smooth
+    factor = np.where(np.isfinite(d), factor, 1.0)
+    return np.where(lm, np.asarray(z, dtype=np.float64) * factor, z)
+
+
 def build_smooth_height_surface(
     heights: np.ndarray,
     land_mask: np.ndarray,
@@ -33,10 +86,12 @@ def build_smooth_height_surface(
     sigma_a: float = 2.2,
     sigma_b: float = 1.4,
     height_power: float = 1.08,
+    coastal_taper_cells: int = 10,
 ) -> np.ndarray:
     """
     Подготовка высот для mesh / 3D: дискретный CA даёт «иголки» — убираем медианой,
     двойным Гауссом и лёгким сжатием профиля (height_power > 1 прижимает перепады).
+    У берега — дополнительное прижатие высоты (coastal_taper_cells), чтобы мягче встречать воду.
     """
     lm = land_mask.astype(bool)
     z = np.where(lm, heights.astype(np.float64) * scale_z, 0.0)
@@ -76,6 +131,7 @@ def build_smooth_height_surface(
         zn = np.clip(z / mx, 0.0, 1.0)
         z = np.where(lm, mx * (zn**height_power), 0.0)
 
+    z = _coastal_height_taper(z, lm, coastal_taper_cells)
     return z
 
 
@@ -224,88 +280,6 @@ def _is_full_land_quad(lm: np.ndarray, i: int, j: int) -> bool:
     return bool(lm[i, j] and lm[i, j + 1] and lm[i + 1, j + 1] and lm[i + 1, j])
 
 
-def build_land_prism_extension_lines(
-    zf: np.ndarray,
-    lm: np.ndarray,
-    scale_xy: float,
-    zw: float,
-    rows: int,
-    cols: int,
-    vid: callable,
-) -> tuple[list[str], list[str], int]:
-    """
-    Нижняя крышка на уровне воды + боковые стенки по контуру суходильных 2×2-квадов
-    (без дублирования общих стен между двумя суходильными ячейками). Вершины «дна» новые,
-    индексы начинаются с rows*cols + 1.
-
-    Возвращает (строки v, строки f без vn, число новых вершин).
-    """
-    sx = float(scale_xy)
-    corner_used = np.zeros((rows, cols), dtype=bool)
-    for i in range(rows - 1):
-        for j in range(cols - 1):
-            if not _is_full_land_quad(lm, i, j):
-                continue
-            corner_used[i : i + 2, j : j + 2] = True
-
-    v_lines: list[str] = []
-    bot_id = np.zeros((rows, cols), dtype=np.int32)
-    next_id = rows * cols + 1
-    for i in range(rows):
-        for j in range(cols):
-            if not corner_used[i, j]:
-                continue
-            bot_id[i, j] = next_id
-            next_id += 1
-            v_lines.append(f"v {j * sx:.6f} {i * sx:.6f} {float(zw):.6f}")
-
-    n_fill = next_id - (rows * cols + 1)
-    if n_fill <= 0:
-        return [], [], 0
-
-    f_lines: list[str] = [
-        "# Нижняя грань и стенки до уровня воды (объём суши; верх — исходные v выше).",
-        "o terrain_solid",
-        "usemtl Land",
-    ]
-
-    for i in range(rows - 1):
-        for j in range(cols - 1):
-            if not _is_full_land_quad(lm, i, j):
-                continue
-            a, b, c, d = int(bot_id[i, j]), int(bot_id[i, j + 1]), int(bot_id[i + 1, j + 1]), int(bot_id[i + 1, j])
-            # Низ (вид снизу, нормаль −Z): TL→BL→BR, TL→BR→TR.
-            f_lines.append(f"f {a} {d} {c}")
-            f_lines.append(f"f {a} {c} {b}")
-
-    for i in range(rows - 1):
-        for j in range(cols - 1):
-            if not _is_full_land_quad(lm, i, j):
-                continue
-            # Север (меньше i): грань наружу −Y в индексах строк… смотрим с +Y наружу.
-            if i == 0 or not _is_full_land_quad(lm, i - 1, j):
-                t1, t2, b1, b2 = vid(i, j), vid(i, j + 1), int(bot_id[i, j]), int(bot_id[i, j + 1])
-                f_lines.append(f"f {t1} {t2} {b2}")
-                f_lines.append(f"f {t1} {b2} {b1}")
-            if i + 1 > rows - 2 or not _is_full_land_quad(lm, i + 1, j):
-                t1, t2 = vid(i + 1, j + 1), vid(i + 1, j)
-                b1, b2 = int(bot_id[i + 1, j + 1]), int(bot_id[i + 1, j])
-                f_lines.append(f"f {t1} {t2} {b2}")
-                f_lines.append(f"f {t1} {b2} {b1}")
-            if j == 0 or not _is_full_land_quad(lm, i, j - 1):
-                t1, t2 = vid(i + 1, j), vid(i, j)
-                b1, b2 = int(bot_id[i + 1, j]), int(bot_id[i, j])
-                f_lines.append(f"f {t1} {t2} {b2}")
-                f_lines.append(f"f {t1} {b2} {b1}")
-            if j + 1 > cols - 2 or not _is_full_land_quad(lm, i, j + 1):
-                t1, t2 = vid(i, j + 1), vid(i + 1, j + 1)
-                b1, b2 = int(bot_id[i, j + 1]), int(bot_id[i + 1, j + 1])
-                f_lines.append(f"f {t1} {t2} {b2}")
-                f_lines.append(f"f {t1} {b2} {b1}")
-
-    return v_lines, f_lines, n_fill
-
-
 def _write_mtl(mtl_path: str) -> None:
     """Диффузные цвета: суша — зелёно-коричневый, море — синее (видно в Material Preview)."""
     text = """# VKR terrain — в Blender включите Viewport Shading: Material Preview или Rendered
@@ -394,9 +368,6 @@ def export_heightmap_obj(
     y0, y1 = -margin, ym + margin
     zw = _water_plane_z_for_mesh_land(Z, lm, scale_xy=sx)
 
-    fill_v, fill_f, n_fill_verts = build_land_prism_extension_lines(Z, lm, sx, zw, rows, cols, vid)
-    lines.extend(fill_v)
-
     for i in range(rows):
         for j in range(cols):
             lines.append(f"vn {nx[i,j]:.6f} {ny[i,j]:.6f} {nz[i,j]:.6f}")
@@ -419,11 +390,9 @@ def export_heightmap_obj(
             lines.append(f"f {a}//{a} {b}//{b} {c}//{c}")
             lines.append(f"f {a}//{a} {c}//{c} {d}//{d}")
 
-    lines.extend(fill_f)
-
     n_terrain_verts = rows * cols
     n_terrain_vn = rows * cols
-    w_base = n_terrain_verts + n_fill_verts
+    w_base = n_terrain_verts
 
     lines.append("o water_surface")
     lines.append("usemtl Sea")
@@ -488,11 +457,6 @@ def export_prepared_surface_obj(
     y0, y1 = -margin, ym + margin
     zw = _water_plane_z_for_mesh_land(zf, lm, scale_xy=scale_xy)
 
-    fill_v, fill_f, n_fill_verts = build_land_prism_extension_lines(
-        zf, lm, scale_xy, zw, rows, cols, vid
-    )
-    lines.extend(fill_v)
-
     for i in range(rows):
         for j in range(cols):
             lines.append(f"vn {nx[i,j]:.6f} {ny[i,j]:.6f} {nz[i,j]:.6f}")
@@ -509,11 +473,9 @@ def export_prepared_surface_obj(
             lines.append(f"f {a}//{a} {b}//{b} {c}//{c}")
             lines.append(f"f {a}//{a} {c}//{c} {d}//{d}")
 
-    lines.extend(fill_f)
-
     n_terrain_verts = rows * cols
     n_terrain_vn = rows * cols
-    w_base = n_terrain_verts + n_fill_verts
+    w_base = n_terrain_verts
 
     lines.append("o water_surface")
     lines.append("usemtl Sea")
